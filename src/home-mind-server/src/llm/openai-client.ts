@@ -250,13 +250,15 @@ export class OpenAIChatEngine implements IChatEngine {
     }
 
     // 8. Extract and store facts (fire-and-forget)
-    extractAndStoreFacts(
-      this.memory,
-      this.extractor,
-      userId,
-      message,
-      responseText
-    ).catch((err) => console.error("Fact extraction failed:", err));
+    if (!request.skipFactExtraction) {
+      extractAndStoreFacts(
+        this.memory,
+        this.extractor,
+        userId,
+        message,
+        responseText
+      ).catch((err) => console.error("Fact extraction failed:", err));
+    }
 
     // 9. If the model produced no usable response, attach a structured error
     // so the HA integration can surface a useful hint instead of the generic

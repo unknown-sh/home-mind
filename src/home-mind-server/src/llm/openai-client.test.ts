@@ -897,6 +897,23 @@ describe("OpenAIChatEngine", () => {
     );
   });
 
+  it("skips fact extraction for synthetic operational probes", async () => {
+    mockCreate.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { content: "Response" }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ])
+    );
+
+    await engine.chat({
+      message: "What is the weather?",
+      userId: "latency-probe",
+      skipFactExtraction: true,
+    });
+
+    expect(extractAndStoreFacts).not.toHaveBeenCalled();
+  });
+
   it("catches extraction errors without failing the response", async () => {
     vi.mocked(extractAndStoreFacts).mockRejectedValue(
       new Error("extraction failed")

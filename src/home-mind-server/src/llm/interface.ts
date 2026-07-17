@@ -14,6 +14,8 @@ export interface ChatRequest {
   conversationId?: string;
   isVoice?: boolean;
   customPrompt?: string;
+  /** Skip asynchronous memory writes for synthetic operational probes. */
+  skipFactExtraction?: boolean;
   /** Server-generated correlation ID; never trusted from the public payload. */
   traceId?: string;
 }

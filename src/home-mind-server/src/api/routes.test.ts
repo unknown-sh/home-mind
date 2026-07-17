@@ -59,6 +59,22 @@ describe("chat request correlation", () => {
     expect(getCapturedRequest()?.traceId).toBe(requestId);
   });
 
+  it("passes the synthetic-probe fact-extraction opt-out to the engine", async () => {
+    const { url, getCapturedRequest } = await startServer();
+    const response = await fetch(`${url}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "What is the weather?",
+        skipFactExtraction: true,
+      }),
+    });
+    await response.json();
+
+    expect(response.status).toBe(200);
+    expect(getCapturedRequest()?.skipFactExtraction).toBe(true);
+  });
+
   it("returns the same request ID passed to the streaming engine", async () => {
     const { url, getCapturedRequest } = await startServer();
     const response = await fetch(`${url}/chat/stream`, {
@@ -73,5 +89,21 @@ describe("chat request correlation", () => {
     expect(getCapturedRequest()?.traceId).toBe(requestId);
     expect(body).toContain("event: chunk");
     expect(body).toContain("event: done");
+  });
+
+  it("passes the synthetic-probe opt-out to the streaming engine", async () => {
+    const { url, getCapturedRequest } = await startServer();
+    const response = await fetch(`${url}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "What is the weather?",
+        skipFactExtraction: true,
+      }),
+    });
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(getCapturedRequest()?.skipFactExtraction).toBe(true);
   });
 });

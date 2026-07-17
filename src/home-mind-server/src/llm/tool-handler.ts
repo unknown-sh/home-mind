@@ -3,9 +3,19 @@ import type { IMemoryStore } from "../memory/interface.js";
 import type { IFactExtractor } from "./interface.js";
 import type { ExtractedFact } from "../memory/types.js";
 import { filterFacts } from "../memory/fact-patterns.js";
+import { compactEntityState, compactEntityStates } from "../ha/entity-projection.js";
 
 /** Max history entries to return to the LLM to avoid blowing context window */
 const MAX_HISTORY_ENTRIES = 200;
+const MAX_ENTITY_RESULTS = 25;
+const DEFAULT_ENTITY_RESULTS = 20;
+const DEFAULT_SEARCH_RESULTS = 12;
+
+function boundedLimit(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(Math.trunc(parsed), MAX_ENTITY_RESULTS));
+}
 
 /**
  * Normalize a timestamp to ensure it has timezone info.
@@ -61,24 +71,37 @@ export async function handleToolCall(
 
     switch (toolName) {
       case "get_state":
-        result = await ha.getState(input.entity_id as string);
+        result = compactEntityState(await ha.getState(input.entity_id as string));
         break;
 
-      case "get_entities":
-        result = await ha.getEntities(input.domain as string | undefined);
+      case "get_entities": {
+        const limit = boundedLimit(input.limit, DEFAULT_ENTITY_RESULTS);
+        result = compactEntityStates(
+          await ha.getEntities(input.domain as string | undefined),
+          limit
+        );
         break;
+      }
 
-      case "search_entities":
-        result = await ha.searchEntities(input.query as string);
+      case "search_entities": {
+        const limit = boundedLimit(input.limit, DEFAULT_SEARCH_RESULTS);
+        result = compactEntityStates(
+          await ha.searchEntities(input.query as string, limit),
+          limit
+        );
         break;
+      }
 
       case "call_service":
-        result = await ha.callService(
+        const serviceResult = await ha.callService(
           input.domain as string,
           input.service as string,
           input.entity_id as string | undefined,
           input.data as Record<string, unknown> | undefined
         );
+        result = Array.isArray(serviceResult)
+          ? compactEntityStates(serviceResult, MAX_ENTITY_RESULTS)
+          : serviceResult;
         break;
 
       case "get_history": {
@@ -98,7 +121,8 @@ export async function handleToolCall(
     }
 
     const elapsed = Date.now() - start;
-    console.log(`[tool] ${toolName} completed in ${elapsed}ms`);
+    const resultBytes = Buffer.byteLength(JSON.stringify(result));
+    console.log(`[tool] ${toolName} completed in ${elapsed}ms (${resultBytes} bytes)`);
     return result;
   } catch (error) {
     const elapsed = Date.now() - start;

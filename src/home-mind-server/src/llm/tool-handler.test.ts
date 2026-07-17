@@ -51,8 +51,40 @@ describe("handleToolCall", () => {
       query: "bedroom",
     });
 
-    expect(ha.searchEntities).toHaveBeenCalledWith("bedroom");
+    expect(ha.searchEntities).toHaveBeenCalledWith("bedroom", 12);
     expect(result).toEqual([{ entity_id: "light.bed" }]);
+  });
+
+  it("compacts and caps broad entity results before returning them to the LLM", async () => {
+    const entities = Array.from({ length: 30 }, (_, index) => ({
+      entity_id: `sensor.test_${index}`,
+      state: String(index),
+      last_changed: "2026-07-16T20:00:00Z",
+      last_updated: "2026-07-16T20:01:00Z",
+      attributes: {
+        friendly_name: `Test ${index}`,
+        unit_of_measurement: "°F",
+        device_class: "temperature",
+        huge_payload: "x".repeat(1000),
+      },
+    }));
+    vi.mocked(ha.getEntities).mockResolvedValue(entities);
+
+    const result = await handleToolCall(ha, "get_entities", {
+      domain: "sensor",
+      limit: 5,
+    });
+
+    const compact = result as Array<Record<string, unknown>>;
+    expect(compact).toHaveLength(5);
+    expect(compact[0]).toEqual({
+      entity_id: "sensor.test_0",
+      state: "0",
+      friendly_name: "Test 0",
+      unit_of_measurement: "°F",
+      device_class: "temperature",
+    });
+    expect(JSON.stringify(result)).not.toContain("huge_payload");
   });
 
   it("dispatches call_service to ha.callService", async () => {

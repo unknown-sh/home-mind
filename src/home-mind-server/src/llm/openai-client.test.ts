@@ -75,14 +75,19 @@ describe("OpenAIChatEngine", () => {
 
     extractor = {} as IFactExtractor;
 
-    ha = {} as HomeAssistantClient;
+    ha = {
+      getState: vi.fn(),
+    } as unknown as HomeAssistantClient;
 
     config = {
       llmProvider: "openai",
       llmModel: "gpt-4o-mini",
       openaiApiKey: "test-key",
       memoryTokenLimit: 1500,
-    } as Config;
+      openaiVoiceMaxTokens: 160,
+      openaiMaxToolRounds: 2,
+      voiceEnvironmentEntityIds: [],
+    } as unknown as Config;
 
     const mockScanner = {
       refreshIfStale: vi.fn().mockResolvedValue(undefined),
@@ -330,7 +335,7 @@ describe("OpenAIChatEngine", () => {
     expect(conversations.storeMessage).not.toHaveBeenCalled();
   });
 
-  it("uses max_tokens 500 for voice mode", async () => {
+  it("uses the bounded completion budget for voice mode", async () => {
     mockCreate.mockResolvedValue(
       makeStream([
         { choices: [{ delta: { content: "Short" }, finish_reason: null }] },
@@ -345,7 +350,7 @@ describe("OpenAIChatEngine", () => {
     });
 
     const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.max_tokens).toBe(500);
+    expect(createCall.max_completion_tokens).toBe(160);
   });
 
   it("uses max_tokens 2048 for non-voice mode", async () => {
@@ -360,6 +365,128 @@ describe("OpenAIChatEngine", () => {
 
     const createCall = mockCreate.mock.calls[0][0];
     expect(createCall.max_tokens).toBe(2048);
+  });
+
+  it("prefetches configured environment state and answers a voice query in one tool-free model call", async () => {
+    config.voiceEnvironmentEntityIds = [
+      "climate.ecobee_thermostat",
+      "weather.forecast_home",
+    ];
+    config.openaiServiceTier = "default";
+    config.openaiReasoningEffort = "none";
+    vi.mocked(ha.getState)
+      .mockResolvedValueOnce({
+        entity_id: "climate.ecobee_thermostat",
+        state: "cool",
+        attributes: { current_temperature: 74, current_humidity: 40 },
+        last_changed: "",
+        last_updated: "",
+      })
+      .mockResolvedValueOnce({
+        entity_id: "weather.forecast_home",
+        state: "rainy",
+        attributes: { temperature: 98, humidity: 23 },
+        last_changed: "",
+        last_updated: "",
+      });
+    mockCreate.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { content: "Inside is 74°F." }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ])
+    );
+
+    const result = await engine.chat({
+      message: "What is the weather, temperature, and humidity?",
+      userId: "user-1",
+      isVoice: true,
+    });
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(ha.getState).toHaveBeenCalledTimes(2);
+    const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.tools).toBeUndefined();
+    expect(createCall.tool_choice).toBe("none");
+    expect(createCall.service_tier).toBe("default");
+    expect(createCall.reasoning_effort).toBe("none");
+    expect(createCall.stream_options).toEqual({ include_usage: true });
+    expect(JSON.stringify(createCall.messages)).toContain("Live Home Assistant environment snapshot");
+    expect(result.toolsUsed).toEqual(["prefetch_environment"]);
+  });
+
+  it("disables tools after one read-only tool round", async () => {
+    mockCreate
+      .mockResolvedValueOnce(
+        makeStream([
+          {
+            choices: [{
+              delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "get_state", arguments: '{"entity_id":"sensor.temp"}' } }] },
+              finish_reason: null,
+            }],
+          },
+          { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+        ])
+      )
+      .mockResolvedValueOnce(
+        makeStream([
+          { choices: [{ delta: { content: "It is 74°F." }, finish_reason: null }] },
+          { choices: [{ delta: {}, finish_reason: "stop" }] },
+        ])
+      );
+
+    await engine.chat({ message: "What is the current temperature?", userId: "user-1" });
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(mockCreate.mock.calls[0][0].tools).toBeDefined();
+    expect(mockCreate.mock.calls[1][0].tools).toBeUndefined();
+    expect(mockCreate.mock.calls[1][0].tool_choice).toBe("none");
+  });
+
+  it("emits correlated per-phase token and latency telemetry", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    mockCreate.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { content: "Hello" }, finish_reason: null }] },
+        {
+          choices: [{ delta: {}, finish_reason: "stop" }],
+          usage: {
+            prompt_tokens: 3332,
+            completion_tokens: 12,
+            total_tokens: 3344,
+            prompt_tokens_details: { cached_tokens: 2688 },
+            completion_tokens_details: { reasoning_tokens: 0 },
+          },
+        },
+      ])
+    );
+
+    await engine.chat({ message: "Hello", userId: "user-1", isVoice: true });
+
+    const events = logSpy.mock.calls
+      .map(([line]) => {
+        try {
+          return JSON.parse(String(line));
+        } catch {
+          return undefined;
+        }
+      })
+      .filter(Boolean);
+    const phaseEvent = events.find((event) => event.event === "home_mind_llm_phase");
+    const chatEvent = events.find((event) => event.event === "home_mind_chat");
+
+    expect(phaseEvent).toMatchObject({
+      phase: 1,
+      prompt_tokens: 3332,
+      cached_tokens: 2688,
+      completion_tokens: 12,
+      reasoning_tokens: 0,
+      finish_reason: "stop",
+    });
+    expect(phaseEvent.duration_ms).toBeTypeOf("number");
+    expect(phaseEvent.ttft_ms).toBeTypeOf("number");
+    expect(chatEvent.trace_id).toBe(phaseEvent.trace_id);
+    expect(chatEvent).toMatchObject({ phases: 1, tool_rounds: 0 });
+    logSpy.mockRestore();
   });
 
   it("fires extractAndStoreFacts after response", async () => {

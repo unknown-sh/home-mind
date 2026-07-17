@@ -21,6 +21,11 @@ describe("loadConfig", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_SERVICE_TIER;
+    delete process.env.OPENAI_REASONING_EFFORT;
+    delete process.env.OPENAI_VOICE_MAX_TOKENS;
+    delete process.env.OPENAI_MAX_TOOL_ROUNDS;
+    delete process.env.VOICE_ENVIRONMENT_ENTITY_IDS;
     delete process.env.OLLAMA_BASE_URL;
     delete process.env.HA_URL;
     delete process.env.HA_TOKEN;
@@ -94,6 +99,30 @@ describe("loadConfig", () => {
 
     expect(config.llmProvider).toBe("openai");
     expect(config.openaiApiKey).toBe("test-openai-key");
+  });
+
+  it("loads bounded voice latency controls", async () => {
+    Object.assign(process.env, BASE_ENV);
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.LLM_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.OPENAI_SERVICE_TIER = "priority";
+    process.env.OPENAI_REASONING_EFFORT = "none";
+    process.env.OPENAI_VOICE_MAX_TOKENS = "160";
+    process.env.OPENAI_MAX_TOOL_ROUNDS = "2";
+    process.env.VOICE_ENVIRONMENT_ENTITY_IDS =
+      "climate.ecobee_thermostat, weather.forecast_home, climate.ecobee_thermostat";
+
+    const config = await loadConfigFresh();
+
+    expect(config.openaiServiceTier).toBe("priority");
+    expect(config.openaiReasoningEffort).toBe("none");
+    expect(config.openaiVoiceMaxTokens).toBe(160);
+    expect(config.openaiMaxToolRounds).toBe(2);
+    expect(config.voiceEnvironmentEntityIds).toEqual([
+      "climate.ecobee_thermostat",
+      "weather.forecast_home",
+    ]);
   });
 
   it("treats empty strings as undefined for optional fields", async () => {

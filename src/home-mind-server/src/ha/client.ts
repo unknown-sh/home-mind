@@ -175,17 +175,36 @@ export class HomeAssistantClient {
   /**
    * Search entities by name or ID substring (cached)
    */
-  async searchEntities(query: string): Promise<EntityState[]> {
+  async searchEntities(query: string, limit: number = 12): Promise<EntityState[]> {
     const states = await this.getAllStatesCached();
-    const lowerQuery = query.toLowerCase();
+    const lowerQuery = query.trim().toLowerCase();
+    const tokens = Array.from(
+      new Set(
+        lowerQuery
+          .split(/[^a-z0-9_]+/i)
+          .map((token) => token.trim())
+          .filter((token) => token.length >= 3)
+      )
+    );
 
-    return states.filter((s) => {
-      const name = (s.attributes.friendly_name as string) || "";
-      return (
-        s.entity_id.toLowerCase().includes(lowerQuery) ||
-        name.toLowerCase().includes(lowerQuery)
-      );
-    });
+    return states
+      .map((state) => {
+        const entityId = state.entity_id.toLowerCase();
+        const name = String(state.attributes.friendly_name ?? "").toLowerCase();
+        let score = 0;
+        if (lowerQuery && (entityId.includes(lowerQuery) || name.includes(lowerQuery))) {
+          score += 20;
+        }
+        for (const token of tokens) {
+          if (entityId.includes(token)) score += 3;
+          if (name.includes(token)) score += 2;
+        }
+        return { state, score };
+      })
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score || a.state.entity_id.localeCompare(b.state.entity_id))
+      .slice(0, Math.max(1, Math.min(limit, 25)))
+      .map(({ state }) => state);
   }
 
   /**

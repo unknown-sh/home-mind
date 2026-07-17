@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { randomUUID } from "node:crypto";
 import type { Config } from "../config.js";
 import type { IMemoryStore } from "../memory/interface.js";
 import type { IConversationStore } from "../memory/types.js";
@@ -8,6 +9,11 @@ import { TopologyScanner } from "../ha/topology-scanner.js";
 import { buildSystemPromptText } from "./prompts.js";
 import { TOOL_DEFINITIONS, toOpenAITools } from "./tool-definitions.js";
 import { handleToolCall, extractAndStoreFacts } from "./tool-handler.js";
+import {
+  buildEnvironmentSnapshot,
+  isEnvironmentReadQuery,
+  isLikelyActionRequest,
+} from "./voice-fast-path.js";
 import type {
   ChatRequest,
   ChatResponse,
@@ -63,6 +69,10 @@ export class OpenAIChatEngine implements IChatEngine {
   ): Promise<ChatResponse> {
     const { message, userId, conversationId, isVoice = false, customPrompt } = request;
     const toolsUsed: string[] = [];
+    const traceId = randomUUID();
+    const chatStartedAt = performance.now();
+    let phase = 0;
+    let fastPath = "none";
 
     // 1. Load user's memory
     const facts = await this.memory.getFactsWithinTokenLimit(
@@ -98,17 +108,52 @@ export class OpenAIChatEngine implements IChatEngine {
       }
     }
 
-    // 4. Add current user message
+    // 4. For common current-environment voice questions, fetch the configured
+    // authoritative states locally and let the model phrase one direct answer.
+    let toolsEnabled = true;
+    if (
+      isVoice &&
+      this.config.voiceEnvironmentEntityIds.length > 0 &&
+      isEnvironmentReadQuery(message)
+    ) {
+      const prefetched = await Promise.allSettled(
+        this.config.voiceEnvironmentEntityIds.map((entityId) => this.ha.getState(entityId))
+      );
+      const states = prefetched
+        .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<HomeAssistantClient["getState"]>>> => result.status === "fulfilled")
+        .map((result) => result.value);
+      if (states.length > 0) {
+        messages.push({ role: "system", content: buildEnvironmentSnapshot(states) });
+        toolsEnabled = false;
+        fastPath = "environment_prefetch";
+        toolsUsed.push("prefetch_environment");
+      }
+      this.logTelemetry({
+        event: "home_mind_prefetch",
+        trace_id: traceId,
+        requested_entities: this.config.voiceEnvironmentEntityIds.length,
+        fetched_entities: states.length,
+        failed_entities: prefetched.length - states.length,
+      });
+    }
+
+    // 5. Add current user message
     messages.push({ role: "user", content: message });
 
     if (conversationId) {
       this.conversations.storeMessage(conversationId, userId, "user", message);
     }
 
-    // 5. Stream and handle tool call loop
-    let result = await this.streamCompletion(messages, isVoice, onChunk);
+    // 6. Stream and handle a bounded tool-call loop.
+    let result = await this.streamCompletion(messages, isVoice, onChunk, {
+      traceId,
+      phase: ++phase,
+      toolsEnabled,
+    });
+    let toolRounds = 0;
 
     while (result.finishReason === "tool_calls" && result.toolCalls.length > 0) {
+      toolRounds += 1;
       // Add assistant message with tool calls
       messages.push({
         role: "assistant",
@@ -120,29 +165,50 @@ export class OpenAIChatEngine implements IChatEngine {
       const toolPromises = result.toolCalls.map(async (tc: FunctionToolCall) => {
         toolsUsed.push(tc.function.name);
         const args = JSON.parse(tc.function.arguments);
+        const toolStartedAt = performance.now();
         const toolResult = await handleToolCall(this.ha, tc.function.name, args);
+        const serialized = JSON.stringify(toolResult);
+        this.logTelemetry({
+          event: "home_mind_tool",
+          trace_id: traceId,
+          phase,
+          tool: tc.function.name,
+          duration_ms: Math.round(performance.now() - toolStartedAt),
+          result_bytes: Buffer.byteLength(serialized),
+        });
         return {
           role: "tool" as const,
           tool_call_id: tc.id,
-          content: JSON.stringify(toolResult, null, 2),
+          content: serialized,
         };
       });
 
       const toolResults = await Promise.all(toolPromises);
       messages.push(...toolResults);
 
-      // Continue streaming
-      result = await this.streamCompletion(messages, isVoice, onChunk);
+      const mutationCompleted = result.toolCalls.some(
+        (toolCall) => toolCall.function.name === "call_service"
+      );
+      const allowAnotherToolRound =
+        isLikelyActionRequest(message) &&
+        !mutationCompleted &&
+        toolRounds < this.config.openaiMaxToolRounds;
+
+      result = await this.streamCompletion(messages, isVoice, onChunk, {
+        traceId,
+        phase: ++phase,
+        toolsEnabled: allowAnotherToolRound,
+      });
     }
 
     const responseText = result.text;
 
-    // 6. Store assistant response
+    // 7. Store assistant response
     if (conversationId && responseText) {
       this.conversations.storeMessage(conversationId, userId, "assistant", responseText);
     }
 
-    // 7. Extract and store facts (fire-and-forget)
+    // 8. Extract and store facts (fire-and-forget)
     extractAndStoreFacts(
       this.memory,
       this.extractor,
@@ -151,13 +217,24 @@ export class OpenAIChatEngine implements IChatEngine {
       responseText
     ).catch((err) => console.error("Fact extraction failed:", err));
 
-    // 8. If the model produced no usable response, attach a structured error
+    // 9. If the model produced no usable response, attach a structured error
     // so the HA integration can surface a useful hint instead of the generic
     // "I received your request but got no response." fallback. The `finish_reason`
     // from the final stream tells us which diagnostic applies.
     const error = responseText === "" && result.toolCalls.length === 0
       ? this.classifyEmptyResponse(result.finishReason)
       : undefined;
+
+    this.logTelemetry({
+      event: "home_mind_chat",
+      trace_id: traceId,
+      duration_ms: Math.round(performance.now() - chatStartedAt),
+      phases: phase,
+      tool_rounds: toolRounds,
+      tools: toolsUsed,
+      fast_path: fastPath,
+      voice: isVoice,
+    });
 
     return {
       response: responseText,
@@ -199,22 +276,42 @@ export class OpenAIChatEngine implements IChatEngine {
   private async streamCompletion(
     messages: OpenAI.ChatCompletionMessageParam[],
     isVoice: boolean,
-    onChunk?: StreamCallback
+    onChunk: StreamCallback | undefined,
+    options: { traceId: string; phase: number; toolsEnabled: boolean }
   ): Promise<{
     text: string;
     finishReason: string | null;
     toolCalls: FunctionToolCall[];
   }> {
-    const stream = await this.client.chat.completions.create({
+    const request: OpenAI.ChatCompletionCreateParamsStreaming = {
       model: this.config.llmModel,
-      max_tokens: isVoice ? 500 : 2048,
       messages,
-      tools: OPENAI_TOOLS,
       stream: true,
-    });
+      stream_options: { include_usage: true },
+      ...(isVoice
+        ? { max_completion_tokens: this.config.openaiVoiceMaxTokens }
+        : { max_tokens: 2048 }),
+      ...(options.toolsEnabled
+        ? { tools: OPENAI_TOOLS }
+        : { tool_choice: "none" as const }),
+      ...(this.config.openaiServiceTier
+        ? { service_tier: this.config.openaiServiceTier }
+        : {}),
+      ...(this.config.openaiReasoningEffort
+        ? { reasoning_effort: this.config.openaiReasoningEffort }
+        : {}),
+    };
+    const startedAt = performance.now();
+    const pending = this.client.chat.completions.create(request);
+    const response = typeof (pending as { withResponse?: unknown }).withResponse === "function"
+      ? await (pending as unknown as { withResponse: () => Promise<{ data: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>; request_id?: string }> }).withResponse()
+      : { data: await pending, request_id: undefined };
+    const stream = response.data;
 
     let text = "";
     let finishReason: string | null = null;
+    let firstDeltaMs: number | undefined;
+    let usage: OpenAI.CompletionUsage | undefined;
 
     // Accumulate tool calls from streamed deltas, indexed by position
     const toolCallAccumulator = new Map<
@@ -223,8 +320,16 @@ export class OpenAIChatEngine implements IChatEngine {
     >();
 
     for await (const chunk of stream) {
+      if (chunk.usage) usage = chunk.usage;
       const choice = chunk.choices[0];
       if (!choice) continue;
+
+      if (
+        firstDeltaMs === undefined &&
+        (choice.delta?.content || (choice.delta?.tool_calls?.length ?? 0) > 0)
+      ) {
+        firstDeltaMs = Math.round(performance.now() - startedAt);
+      }
 
       // Accumulate text
       if (choice.delta?.content) {
@@ -274,6 +379,28 @@ export class OpenAIChatEngine implements IChatEngine {
       });
     }
 
+    const durationMs = Math.round(performance.now() - startedAt);
+    this.logTelemetry({
+      event: "home_mind_llm_phase",
+      trace_id: options.traceId,
+      phase: options.phase,
+      duration_ms: durationMs,
+      ttft_ms: firstDeltaMs ?? durationMs,
+      tools_enabled: options.toolsEnabled,
+      requested_service_tier: this.config.openaiServiceTier ?? "provider_default",
+      openai_request_id: response.request_id,
+      prompt_tokens: usage?.prompt_tokens,
+      cached_tokens: usage?.prompt_tokens_details?.cached_tokens,
+      completion_tokens: usage?.completion_tokens,
+      reasoning_tokens: usage?.completion_tokens_details?.reasoning_tokens,
+      finish_reason: finishReason,
+      tool_calls: toolCalls.map((toolCall) => toolCall.function.name),
+    });
+
     return { text, finishReason, toolCalls };
+  }
+
+  private logTelemetry(fields: Record<string, unknown>): void {
+    console.log(JSON.stringify(fields));
   }
 }

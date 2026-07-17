@@ -17,6 +17,7 @@ const ChatRequestSchema = z.object({
   conversationId: z.string().optional(),
   isVoice: z.boolean().default(false),
   customPrompt: z.string().optional(),
+  skipFactExtraction: z.boolean().default(false),
 });
 
 const AddFactSchema = z.object({

@@ -155,13 +155,15 @@ export class LLMClient implements IChatEngine {
     }
 
     // 7. Extract and store new facts (async, don't block response)
-    extractAndStoreFacts(
-      this.memory,
-      this.extractor,
-      userId,
-      message,
-      responseText
-    ).catch((err) => console.error("Fact extraction failed:", err));
+    if (!request.skipFactExtraction) {
+      extractAndStoreFacts(
+        this.memory,
+        this.extractor,
+        userId,
+        message,
+        responseText
+      ).catch((err) => console.error("Fact extraction failed:", err));
+    }
 
     // Count facts learned (we don't wait for extraction, so return 0 for now)
     return {

@@ -422,7 +422,8 @@ describe("OpenAIChatEngine", () => {
     expect(mockCreate).toHaveBeenCalledTimes(1);
     expect(ha.getState).toHaveBeenCalledTimes(2);
     const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.tools).toBeUndefined();
+    expect(createCall.tools?.length).toBeGreaterThan(0);
+    expect(createCall.tools?.[0]?.type).toBe("function");
     expect(createCall.tool_choice).toBe("none");
     expect(createCall.service_tier).toBe("default");
     expect(createCall.reasoning_effort).toBe("none");

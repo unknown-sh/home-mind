@@ -157,6 +157,9 @@ same `trace_id` expose the HTTP total (`home_mind_http`), each model phase and
 TTFT (`home_mind_llm_phase`), local HA work (`home_mind_tool` or
 `home_mind_prefetch`), and the request summary (`home_mind_chat`). This makes a
 single Assist request traceable without logging credentials or prompt content.
+`delivery_ttft_ms` equals provider TTFT for native OpenAI. Ollama and custom
+OpenAI-compatible endpoints buffer tool-disabled phases for mutation safety, so
+that field records when verified text was actually released to the client.
 
 ## Custom Prompt
 

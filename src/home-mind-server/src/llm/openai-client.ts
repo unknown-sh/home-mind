@@ -359,6 +359,9 @@ export class OpenAIChatEngine implements IChatEngine {
       ? await (pending as unknown as { withResponse: () => Promise<{ data: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>; request_id?: string }> }).withResponse()
       : { data: await pending, request_id: undefined };
     const stream = response.data;
+    const bufferToolDisabledOutput =
+      !options.toolsEnabled &&
+      (this.config.llmProvider === "ollama" || Boolean(this.config.openaiBaseUrl));
 
     let text = "";
     let finishReason: string | null = null;
@@ -388,13 +391,13 @@ export class OpenAIChatEngine implements IChatEngine {
       if (choice.delta?.content) {
         text += choice.delta.content;
         if (onChunk) {
-          if (options.toolsEnabled) {
-            onChunk(choice.delta.content);
-          } else {
+          if (bufferToolDisabledOutput) {
             // A provider can ignore tool_choice:none and append a tool call
             // after success-looking text. Buffer enforcement phases until the
             // finish reason proves the text is safe to release.
             bufferedChunks.push(choice.delta.content);
+          } else {
+            onChunk(choice.delta.content);
           }
         }
       }
@@ -439,7 +442,7 @@ export class OpenAIChatEngine implements IChatEngine {
       });
     }
 
-    if (!options.toolsEnabled && toolCalls.length === 0 && onChunk) {
+    if (bufferToolDisabledOutput && toolCalls.length === 0 && onChunk) {
       for (const chunk of bufferedChunks) onChunk(chunk);
     }
 
@@ -450,7 +453,14 @@ export class OpenAIChatEngine implements IChatEngine {
       phase: options.phase,
       duration_ms: durationMs,
       ttft_ms: firstDeltaMs ?? null,
+      delivery_ttft_ms:
+        firstDeltaMs === undefined
+          ? null
+          : bufferToolDisabledOutput
+            ? durationMs
+            : firstDeltaMs,
       first_delta_observed: firstDeltaMs !== undefined,
+      output_buffered: bufferToolDisabledOutput,
       tools_enabled: options.toolsEnabled,
       requested_service_tier: this.config.openaiServiceTier ?? "provider_default",
       openai_request_id: response.request_id,

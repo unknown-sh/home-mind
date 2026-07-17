@@ -690,6 +690,7 @@ describe("OpenAIChatEngine", () => {
 
   it("discards success-looking text that accompanies a rejected tool call", async () => {
     config.openaiMaxToolRounds = 1;
+    config.llmProvider = "ollama";
     mockCreate
       .mockResolvedValueOnce(
         makeStream([
@@ -725,6 +726,36 @@ describe("OpenAIChatEngine", () => {
     expect(chunks).toEqual([]);
     expect(result.response).toBe("");
     expect(result.error?.code).toBe("TOOL_ROUND_LIMIT");
+  });
+
+  it("streams native OpenAI fast-path output without compatibility buffering", async () => {
+    config.voiceEnvironmentEntityIds = ["weather.forecast_home"];
+    vi.mocked(ha.getState).mockResolvedValue({
+      entity_id: "weather.forecast_home",
+      state: "sunny",
+      attributes: { temperature: 75 },
+      last_changed: "",
+      last_updated: "",
+    });
+    mockCreate.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { content: "Sunny" }, finish_reason: null }] },
+        { choices: [{ delta: { content: " and 75°F" }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ])
+    );
+    const chunks: string[] = [];
+
+    await engine.chat(
+      {
+        message: "What is the weather?",
+        userId: "user-1",
+        isVoice: true,
+      },
+      (chunk) => chunks.push(chunk)
+    );
+
+    expect(chunks).toEqual(["Sunny", " and 75°F"]);
   });
 
   it("emits correlated per-phase token and latency telemetry", async () => {

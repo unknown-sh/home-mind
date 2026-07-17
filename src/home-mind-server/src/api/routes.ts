@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import multer from "multer";
+import { randomUUID } from "node:crypto";
 import type { IChatEngine } from "../llm/interface.js";
 import type { IMemoryStore } from "../memory/interface.js";
 import type { IConversationStore } from "../memory/types.js";
@@ -48,6 +49,8 @@ export function createRouter(
    * Uses streaming internally for faster processing, returns complete response.
    */
   router.post("/chat", async (req: Request, res: Response) => {
+    const traceId = randomUUID();
+    res.setHeader("X-Request-ID", traceId);
     try {
       const parsed = ChatRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -61,10 +64,15 @@ export function createRouter(
       const response = await llm.chat({
         ...parsed.data,
         customPrompt: parsed.data.customPrompt ?? defaultCustomPrompt,
+        traceId,
       });
       res.json(response);
     } catch (error) {
-      console.error("Chat error:", error);
+      console.error(JSON.stringify({
+        event: "home_mind_chat_error",
+        trace_id: traceId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
       if ((error as any)?.status === 402) {
         return res.status(402).json({ error: "usage_limit_reached" });
       }
@@ -79,6 +87,8 @@ export function createRouter(
    * Sends text chunks as they arrive, then final response.
    */
   router.post("/chat/stream", async (req: Request, res: Response) => {
+    const traceId = randomUUID();
+    res.setHeader("X-Request-ID", traceId);
     try {
       const parsed = ChatRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -98,6 +108,7 @@ export function createRouter(
       const response = await llm.chat({
         ...parsed.data,
         customPrompt: parsed.data.customPrompt ?? defaultCustomPrompt,
+        traceId,
       }, (chunk: string) => {
         res.write(`event: chunk\ndata: ${JSON.stringify({ text: chunk })}\n\n`);
       });
@@ -106,7 +117,12 @@ export function createRouter(
       res.write(`event: done\ndata: ${JSON.stringify(response)}\n\n`);
       res.end();
     } catch (error) {
-      console.error("Chat stream error:", error);
+      console.error(JSON.stringify({
+        event: "home_mind_chat_error",
+        trace_id: traceId,
+        streaming: true,
+        error: error instanceof Error ? error.message : String(error),
+      }));
       if ((error as any)?.status === 402) {
         res.write(`event: error\ndata: ${JSON.stringify({ error: "usage_limit_reached" })}\n\n`);
         res.end();

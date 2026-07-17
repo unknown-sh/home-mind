@@ -25,6 +25,7 @@ describe("loadConfig", () => {
     delete process.env.OPENAI_REASONING_EFFORT;
     delete process.env.OPENAI_VOICE_MAX_TOKENS;
     delete process.env.OPENAI_MAX_TOOL_ROUNDS;
+    delete process.env.VOICE_ENVIRONMENT_PREFETCH_TIMEOUT_MS;
     delete process.env.VOICE_ENVIRONMENT_ENTITY_IDS;
     delete process.env.OLLAMA_BASE_URL;
     delete process.env.HA_URL;
@@ -110,6 +111,7 @@ describe("loadConfig", () => {
     process.env.OPENAI_REASONING_EFFORT = "none";
     process.env.OPENAI_VOICE_MAX_TOKENS = "160";
     process.env.OPENAI_MAX_TOOL_ROUNDS = "2";
+    process.env.VOICE_ENVIRONMENT_PREFETCH_TIMEOUT_MS = "750";
     process.env.VOICE_ENVIRONMENT_ENTITY_IDS =
       "climate.ecobee_thermostat, weather.forecast_home, climate.ecobee_thermostat";
 
@@ -119,6 +121,7 @@ describe("loadConfig", () => {
     expect(config.openaiReasoningEffort).toBe("none");
     expect(config.openaiVoiceMaxTokens).toBe(160);
     expect(config.openaiMaxToolRounds).toBe(2);
+    expect(config.voiceEnvironmentPrefetchTimeoutMs).toBe(750);
     expect(config.voiceEnvironmentEntityIds).toEqual([
       "climate.ecobee_thermostat",
       "weather.forecast_home",

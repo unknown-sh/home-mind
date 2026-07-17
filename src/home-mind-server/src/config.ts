@@ -16,6 +16,12 @@ const ConfigSchema = z
     openaiReasoningEffort: z.enum(["none", "minimal", "low", "medium", "high"]).optional(),
     openaiVoiceMaxTokens: z.coerce.number().int().min(64).max(512).default(160),
     openaiMaxToolRounds: z.coerce.number().int().min(1).max(4).default(2),
+    voiceEnvironmentPrefetchTimeoutMs: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(5000)
+      .default(750),
     voiceEnvironmentEntityIds: z
       .string()
       .optional()
@@ -119,6 +125,9 @@ export function loadConfig(): Config {
     openaiReasoningEffort: emptyToUndefined(process.env.OPENAI_REASONING_EFFORT),
     openaiVoiceMaxTokens: emptyToUndefined(process.env.OPENAI_VOICE_MAX_TOKENS),
     openaiMaxToolRounds: emptyToUndefined(process.env.OPENAI_MAX_TOOL_ROUNDS),
+    voiceEnvironmentPrefetchTimeoutMs: emptyToUndefined(
+      process.env.VOICE_ENVIRONMENT_PREFETCH_TIMEOUT_MS
+    ),
     voiceEnvironmentEntityIds: emptyToUndefined(process.env.VOICE_ENVIRONMENT_ENTITY_IDS),
     openaiResponseFormat: emptyToUndefined(process.env.OPENAI_RESPONSE_FORMAT),
     openaiMaxTokens: emptyToUndefined(process.env.OPENAI_MAX_TOKENS),

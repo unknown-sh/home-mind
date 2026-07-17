@@ -12,7 +12,6 @@ import { handleToolCall, extractAndStoreFacts } from "./tool-handler.js";
 import {
   buildEnvironmentSnapshot,
   isEnvironmentReadQuery,
-  isLikelyActionRequest,
 } from "./voice-fast-path.js";
 import type {
   ChatRequest,
@@ -69,7 +68,7 @@ export class OpenAIChatEngine implements IChatEngine {
   ): Promise<ChatResponse> {
     const { message, userId, conversationId, isVoice = false, customPrompt } = request;
     const toolsUsed: string[] = [];
-    const traceId = randomUUID();
+    const traceId = request.traceId ?? randomUUID();
     const chatStartedAt = performance.now();
     let phase = 0;
     let fastPath = "none";
@@ -116,14 +115,28 @@ export class OpenAIChatEngine implements IChatEngine {
       this.config.voiceEnvironmentEntityIds.length > 0 &&
       isEnvironmentReadQuery(message)
     ) {
-      const prefetched = await Promise.allSettled(
-        this.config.voiceEnvironmentEntityIds.map((entityId) => this.ha.getState(entityId))
+      const prefetchStartedAt = performance.now();
+      const prefetchController = new AbortController();
+      const prefetchTimeout = setTimeout(
+        () => prefetchController.abort(),
+        this.config.voiceEnvironmentPrefetchTimeoutMs
       );
+      const prefetched = await Promise.allSettled(
+        this.config.voiceEnvironmentEntityIds.map((entityId) =>
+          this.ha.getState(entityId, prefetchController.signal)
+        )
+      ).finally(() => clearTimeout(prefetchTimeout));
       const states = prefetched
         .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<HomeAssistantClient["getState"]>>> => result.status === "fulfilled")
         .map((result) => result.value);
-      if (states.length > 0) {
-        messages.push({ role: "system", content: buildEnvironmentSnapshot(states) });
+      if (states.length === this.config.voiceEnvironmentEntityIds.length) {
+        // Keep all system instructions ahead of persisted conversation history.
+        // Some OpenAI-compatible providers reject or weaken system messages that
+        // appear after assistant/user turns.
+        messages.splice(1, 0, {
+          role: "system",
+          content: buildEnvironmentSnapshot(states),
+        });
         toolsEnabled = false;
         fastPath = "environment_prefetch";
         toolsUsed.push("prefetch_environment");
@@ -134,6 +147,8 @@ export class OpenAIChatEngine implements IChatEngine {
         requested_entities: this.config.voiceEnvironmentEntityIds.length,
         fetched_entities: states.length,
         failed_entities: prefetched.length - states.length,
+        duration_ms: Math.round(performance.now() - prefetchStartedAt),
+        timed_out: prefetchController.signal.aborted,
       });
     }
 
@@ -150,9 +165,35 @@ export class OpenAIChatEngine implements IChatEngine {
       phase: ++phase,
       toolsEnabled,
     });
+    let responseToolsEnabled = toolsEnabled;
     let toolRounds = 0;
+    let toolLimitReached = false;
 
     while (result.finishReason === "tool_calls" && result.toolCalls.length > 0) {
+      if (
+        !responseToolsEnabled ||
+        toolRounds >= this.config.openaiMaxToolRounds
+      ) {
+        toolLimitReached = true;
+        this.logTelemetry({
+          event: "home_mind_tool_limit",
+          trace_id: traceId,
+          phase,
+          tool_rounds: toolRounds,
+          rejected_tools: result.toolCalls.map(
+            (toolCall) => toolCall.function.name
+          ),
+        });
+        result = {
+          // Never surface success-looking text that accompanied a rejected
+          // mutation. A non-compliant provider may emit both content and a
+          // tool call despite tool_choice:none.
+          text: "",
+          finishReason: "tool_limit",
+          toolCalls: [],
+        };
+        break;
+      }
       toolRounds += 1;
       // Add assistant message with tool calls
       messages.push({
@@ -190,7 +231,6 @@ export class OpenAIChatEngine implements IChatEngine {
         (toolCall) => toolCall.function.name === "call_service"
       );
       const allowAnotherToolRound =
-        isLikelyActionRequest(message) &&
         !mutationCompleted &&
         toolRounds < this.config.openaiMaxToolRounds;
 
@@ -199,6 +239,7 @@ export class OpenAIChatEngine implements IChatEngine {
         phase: ++phase,
         toolsEnabled: allowAnotherToolRound,
       });
+      responseToolsEnabled = allowAnotherToolRound;
     }
 
     const responseText = result.text;
@@ -221,9 +262,11 @@ export class OpenAIChatEngine implements IChatEngine {
     // so the HA integration can surface a useful hint instead of the generic
     // "I received your request but got no response." fallback. The `finish_reason`
     // from the final stream tells us which diagnostic applies.
-    const error = responseText === "" && result.toolCalls.length === 0
-      ? this.classifyEmptyResponse(result.finishReason)
-      : undefined;
+    const error = toolLimitReached
+      ? this.classifyEmptyResponse("tool_limit")
+      : responseText === "" && result.toolCalls.length === 0
+        ? this.classifyEmptyResponse(result.finishReason)
+        : undefined;
 
     this.logTelemetry({
       event: "home_mind_chat",
@@ -262,6 +305,13 @@ export class OpenAIChatEngine implements IChatEngine {
           "If this happens on benign smart-home commands, try a different model.",
       };
     }
+    if (finishReason === "tool_limit") {
+      return {
+        code: "TOOL_ROUND_LIMIT",
+        hint:
+          "The provider returned tool calls after tools were disabled or after the configured tool-round limit. No rejected tool calls were executed.",
+      };
+    }
     return {
       code: "EMPTY_CONTENT",
       hint:
@@ -289,7 +339,9 @@ export class OpenAIChatEngine implements IChatEngine {
       stream: true,
       stream_options: { include_usage: true },
       ...(isVoice
-        ? { max_completion_tokens: this.config.openaiVoiceMaxTokens }
+        ? this.config.llmProvider === "ollama"
+          ? { max_tokens: this.config.openaiVoiceMaxTokens }
+          : { max_completion_tokens: this.config.openaiVoiceMaxTokens }
         : { max_tokens: 2048 }),
       ...(options.toolsEnabled
         ? { tools: OPENAI_TOOLS }
@@ -312,6 +364,7 @@ export class OpenAIChatEngine implements IChatEngine {
     let finishReason: string | null = null;
     let firstDeltaMs: number | undefined;
     let usage: OpenAI.CompletionUsage | undefined;
+    const bufferedChunks: string[] = [];
 
     // Accumulate tool calls from streamed deltas, indexed by position
     const toolCallAccumulator = new Map<
@@ -335,7 +388,14 @@ export class OpenAIChatEngine implements IChatEngine {
       if (choice.delta?.content) {
         text += choice.delta.content;
         if (onChunk) {
-          onChunk(choice.delta.content);
+          if (options.toolsEnabled) {
+            onChunk(choice.delta.content);
+          } else {
+            // A provider can ignore tool_choice:none and append a tool call
+            // after success-looking text. Buffer enforcement phases until the
+            // finish reason proves the text is safe to release.
+            bufferedChunks.push(choice.delta.content);
+          }
         }
       }
 
@@ -379,13 +439,18 @@ export class OpenAIChatEngine implements IChatEngine {
       });
     }
 
+    if (!options.toolsEnabled && toolCalls.length === 0 && onChunk) {
+      for (const chunk of bufferedChunks) onChunk(chunk);
+    }
+
     const durationMs = Math.round(performance.now() - startedAt);
     this.logTelemetry({
       event: "home_mind_llm_phase",
       trace_id: options.traceId,
       phase: options.phase,
       duration_ms: durationMs,
-      ttft_ms: firstDeltaMs ?? durationMs,
+      ttft_ms: firstDeltaMs ?? null,
+      first_delta_observed: firstDeltaMs !== undefined,
       tools_enabled: options.toolsEnabled,
       requested_service_tier: this.config.openaiServiceTier ?? "provider_default",
       openai_request_id: response.request_id,

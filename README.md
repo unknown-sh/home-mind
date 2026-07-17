@@ -132,6 +132,32 @@ cp -r src/ha-integration/custom_components/home_mind /config/custom_components/
 2. Enter your Home Mind API URL (e.g., `http://192.168.1.100:3100`)
 3. Set as conversation agent in Voice Assistants
 
+## Voice latency tuning and telemetry
+
+OpenAI-backed voice requests can be bounded and measured without changing the
+text-chat path:
+
+- `OPENAI_VOICE_MAX_TOKENS` caps voice output (default `160`). Native OpenAI
+  uses `max_completion_tokens`; the Ollama adapter uses `max_tokens`.
+- `OPENAI_MAX_TOOL_ROUNDS` caps tool rounds (default `2`, maximum `4`). A
+  completed mutation never gets another tool round.
+- `OPENAI_SERVICE_TIER` optionally selects `auto`, `default`, `flex`, or
+  `priority`; omit it to use the provider default.
+- `OPENAI_REASONING_EFFORT` optionally selects `none`, `minimal`, `low`,
+  `medium`, or `high` on models that support the field.
+- `VOICE_ENVIRONMENT_ENTITY_IDS` is a comma-separated list of authoritative HA
+  entities for generic, current weather/temperature/humidity voice questions.
+  The one-call fast path activates only when every configured entity succeeds;
+  room-specific, historical, and forecast questions use the normal tools.
+- `VOICE_ENVIRONMENT_PREFETCH_TIMEOUT_MS` aborts the local HA prefetch and
+  falls back to normal tools when any configured read stalls (default `750`).
+
+Each chat response includes an `X-Request-ID` header. JSON log events with the
+same `trace_id` expose the HTTP total (`home_mind_http`), each model phase and
+TTFT (`home_mind_llm_phase`), local HA work (`home_mind_tool` or
+`home_mind_prefetch`), and the request summary (`home_mind_chat`). This makes a
+single Assist request traceable without logging credentials or prompt content.
+
 ## Custom Prompt
 
 You can customize the AI's personality and behavior without touching the core system prompt. Your custom prompt **replaces the default identity** — it becomes the opening of the system prompt, giving it maximum authority over persona and tone. The built-in smart home capabilities (tool usage, memory, response style) are appended after your prompt. The AI still knows how to control devices, remember facts, and query sensors; your prompt shapes *who* it is and *how* it communicates.

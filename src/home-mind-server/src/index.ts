@@ -105,7 +105,14 @@ app.use((req, res, next) => {
   const start = Date.now();
   res.on("finish", () => {
     const duration = Date.now() - start;
-    console.log(`${req.method} ${req.path} ${res.statusCode} ${duration}ms`);
+    console.log(JSON.stringify({
+      event: "home_mind_http",
+      trace_id: res.getHeader("X-Request-ID") ?? undefined,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration_ms: duration,
+    }));
   });
   next();
 });

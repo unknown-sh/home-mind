@@ -31,6 +31,40 @@ describe("handleToolCall", () => {
     expect(result).toEqual({ state: "on" });
   });
 
+  it("preserves the full capability contract for targeted state results", async () => {
+    vi.mocked(ha.getState).mockResolvedValue({
+      entity_id: "light.kitchen",
+      state: "on",
+      attributes: {
+        friendly_name: "Kitchen",
+        brightness: 128,
+        color_mode: "rgbw",
+        supported_color_modes: ["rgbw"],
+        effect_list: Array.from({ length: 100 }, (_, index) => `effect-${index}`),
+      },
+      last_changed: "",
+      last_updated: "",
+    });
+
+    const result = await handleToolCall(ha, "get_state", {
+      entity_id: "light.kitchen",
+    });
+
+    expect(result).toEqual({
+      entity_id: "light.kitchen",
+      state: "on",
+      attributes: {
+        friendly_name: "Kitchen",
+        brightness: 128,
+        color_mode: "rgbw",
+        supported_color_modes: ["rgbw"],
+        effect_list: Array.from({ length: 100 }, (_, index) => `effect-${index}`),
+      },
+      last_changed: "",
+      last_updated: "",
+    });
+  });
+
   it("dispatches get_entities to ha.getEntities", async () => {
     const result = await handleToolCall(ha, "get_entities", {
       domain: "light",

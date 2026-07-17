@@ -140,7 +140,7 @@ export class HomeAssistantClient {
   /**
    * Get state of a single entity (cached)
    */
-  async getState(entityId: string): Promise<EntityState> {
+  async getState(entityId: string, signal?: AbortSignal): Promise<EntityState> {
     // Check individual cache first
     const cached = this.entityCache.get(entityId);
     if (this.isCacheValid(cached)) {
@@ -154,7 +154,7 @@ export class HomeAssistantClient {
     }
 
     // Fetch individual entity
-    const state = await this.fetch<EntityState>(`/api/states/${entityId}`);
+    const state = await this.fetch<EntityState>(`/api/states/${entityId}`, { signal });
     this.entityCache.set(entityId, { data: state, timestamp: Date.now() });
     return state;
   }
@@ -181,7 +181,7 @@ export class HomeAssistantClient {
     const tokens = Array.from(
       new Set(
         lowerQuery
-          .split(/[^a-z0-9_]+/i)
+          .split(/[^\p{L}\p{N}_]+/u)
           .map((token) => token.trim())
           .filter((token) => token.length >= 3)
       )

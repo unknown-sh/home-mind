@@ -15,6 +15,29 @@ const USEFUL_ATTRIBUTES = [
   "wind_speed_unit",
 ] as const;
 
+const DOMAIN_ATTRIBUTES: Record<string, readonly string[]> = {
+  light: [
+    "brightness",
+    "color_mode",
+    "supported_color_modes",
+    "color_temp_kelvin",
+    "rgb_color",
+    "rgbw_color",
+  ],
+  climate: [
+    "hvac_action",
+    "hvac_modes",
+    "preset_mode",
+    "preset_modes",
+    "min_temp",
+    "max_temp",
+    "target_temp_high",
+    "target_temp_low",
+  ],
+  cover: ["current_position", "current_tilt_position"],
+  fan: ["percentage", "percentage_step", "preset_mode", "preset_modes"],
+};
+
 export type CompactEntityState = {
   entity_id?: string;
   state?: string;
@@ -30,6 +53,7 @@ export type CompactEntityState = {
   pressure_unit?: unknown;
   wind_speed?: unknown;
   wind_speed_unit?: unknown;
+  [key: string]: unknown;
 };
 
 /** Return only state fields that help the model answer or select an entity. */
@@ -42,6 +66,13 @@ export function compactEntityState(
 
   const attributes = entity.attributes ?? {};
   for (const key of USEFUL_ATTRIBUTES) {
+    const value = attributes[key];
+    if (value !== undefined && value !== null && value !== "") {
+      compact[key] = value;
+    }
+  }
+  const domain = entity.entity_id?.split(".", 1)[0] ?? "";
+  for (const key of DOMAIN_ATTRIBUTES[domain] ?? []) {
     const value = attributes[key];
     if (value !== undefined && value !== null && value !== "") {
       compact[key] = value;

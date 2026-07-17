@@ -3,7 +3,7 @@ import type { IMemoryStore } from "../memory/interface.js";
 import type { IFactExtractor } from "./interface.js";
 import type { ExtractedFact } from "../memory/types.js";
 import { filterFacts } from "../memory/fact-patterns.js";
-import { compactEntityState, compactEntityStates } from "../ha/entity-projection.js";
+import { compactEntityStates } from "../ha/entity-projection.js";
 
 /** Max history entries to return to the LLM to avoid blowing context window */
 const MAX_HISTORY_ENTRIES = 200;
@@ -71,7 +71,10 @@ export async function handleToolCall(
 
     switch (toolName) {
       case "get_state":
-        result = compactEntityState(await ha.getState(input.entity_id as string));
+        // A targeted lookup is already bounded to one entity. Preserve its full
+        // capability attributes because prompts rely on fields such as
+        // brightness and supported_color_modes before performing mutations.
+        result = await ha.getState(input.entity_id as string);
         break;
 
       case "get_entities": {

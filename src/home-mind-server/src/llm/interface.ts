@@ -14,6 +14,8 @@ export interface ChatRequest {
   conversationId?: string;
   isVoice?: boolean;
   customPrompt?: string;
+  /** Server-generated correlation ID; never trusted from the public payload. */
+  traceId?: string;
 }
 
 /**
@@ -27,7 +29,8 @@ export interface ChatError {
   code:
     | "EMPTY_CONTENT"
     | "MAX_TOKENS_TRUNCATED"
-    | "CONTENT_FILTERED";
+    | "CONTENT_FILTERED"
+    | "TOOL_ROUND_LIMIT";
   hint: string;
 }
 

@@ -49,3 +49,52 @@ describe("HomeAssistantClient.getHistory URL encoding", () => {
     expect(captured).toContain("end_time=2026-05-11T09%3A00%3A00Z");
   });
 });
+
+describe("HomeAssistantClient.searchEntities", () => {
+  it("matches individual query terms, ranks stronger matches, and caps results", async () => {
+    const states = [
+      {
+        entity_id: "sensor.ecobee_thermostat_current_temperature",
+        state: "74",
+        attributes: { friendly_name: "Ecobee Thermostat Current Temperature" },
+        last_changed: "",
+        last_updated: "",
+      },
+      {
+        entity_id: "sensor.ecobee_thermostat_current_humidity",
+        state: "40",
+        attributes: { friendly_name: "Ecobee Thermostat Current Humidity" },
+        last_changed: "",
+        last_updated: "",
+      },
+      {
+        entity_id: "weather.forecast_home",
+        state: "rainy",
+        attributes: { friendly_name: "Forecast Home" },
+        last_changed: "",
+        last_updated: "",
+      },
+      {
+        entity_id: "sensor.unrelated",
+        state: "1",
+        attributes: { friendly_name: "Unrelated" },
+        last_changed: "",
+        last_updated: "",
+      },
+    ];
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify(states), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+
+    const ha = new HomeAssistantClient(baseConfig);
+    const result = await ha.searchEntities("temperature humidity weather", 2);
+
+    expect(result).toHaveLength(2);
+    expect(result.map((state) => state.entity_id)).toEqual([
+      "sensor.ecobee_thermostat_current_humidity",
+      "sensor.ecobee_thermostat_current_temperature",
+    ]);
+  });
+});

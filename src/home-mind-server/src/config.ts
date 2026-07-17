@@ -12,6 +12,29 @@ const ConfigSchema = z
     anthropicApiKey: z.string().optional(),
     openaiApiKey: z.string().optional(),
     openaiBaseUrl: z.string().url().optional(),
+    openaiServiceTier: z.enum(["auto", "default", "flex", "priority"]).optional(),
+    openaiReasoningEffort: z.enum(["none", "minimal", "low", "medium", "high"]).optional(),
+    openaiVoiceMaxTokens: z.coerce.number().int().min(64).max(512).default(160),
+    openaiMaxToolRounds: z.coerce.number().int().min(1).max(4).default(2),
+    voiceEnvironmentPrefetchTimeoutMs: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(5000)
+      .default(750),
+    voiceEnvironmentEntityIds: z
+      .string()
+      .optional()
+      .transform((value) =>
+        Array.from(
+          new Set(
+            (value ?? "")
+              .split(",")
+              .map((entityId) => entityId.trim())
+              .filter(Boolean)
+          )
+        )
+      ),
 
     // OpenAI fact-extractor tuning (applies only to OpenAIFactExtractor — chat
     // returns free-form text and ignores these). Some OpenAI-compatible
@@ -98,6 +121,14 @@ export function loadConfig(): Config {
     anthropicApiKey: emptyToUndefined(process.env.ANTHROPIC_API_KEY),
     openaiApiKey: emptyToUndefined(process.env.OPENAI_API_KEY),
     openaiBaseUrl: emptyToUndefined(process.env.OPENAI_BASE_URL),
+    openaiServiceTier: emptyToUndefined(process.env.OPENAI_SERVICE_TIER),
+    openaiReasoningEffort: emptyToUndefined(process.env.OPENAI_REASONING_EFFORT),
+    openaiVoiceMaxTokens: emptyToUndefined(process.env.OPENAI_VOICE_MAX_TOKENS),
+    openaiMaxToolRounds: emptyToUndefined(process.env.OPENAI_MAX_TOOL_ROUNDS),
+    voiceEnvironmentPrefetchTimeoutMs: emptyToUndefined(
+      process.env.VOICE_ENVIRONMENT_PREFETCH_TIMEOUT_MS
+    ),
+    voiceEnvironmentEntityIds: emptyToUndefined(process.env.VOICE_ENVIRONMENT_ENTITY_IDS),
     openaiResponseFormat: emptyToUndefined(process.env.OPENAI_RESPONSE_FORMAT),
     openaiMaxTokens: emptyToUndefined(process.env.OPENAI_MAX_TOKENS),
     ollamaBaseUrl: emptyToUndefined(process.env.OLLAMA_BASE_URL),

@@ -31,7 +31,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_entities",
     description:
-      "List all Home Assistant entities, optionally filtered by domain (light, sensor, switch, etc.)",
+      "List a bounded set of Home Assistant entities, preferably filtered by domain. Returns compact state fields only.",
     parameters: {
       type: "object",
       properties: {
@@ -40,6 +40,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "Optional domain to filter by (e.g., 'light', 'sensor', 'switch')",
         },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 25,
+          description: "Maximum results to return (default 20, hard maximum 25)",
+        },
       },
       required: [],
     },
@@ -47,13 +53,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "search_entities",
     description:
-      "Search for Home Assistant entities by name or ID substring. Returns entity IDs, states, and attributes. Use this to find the correct entity_id before calling call_service.",
+      "Search Home Assistant entities by one or more name/ID keywords. Returns ranked, compact results. Use this to find the correct entity_id before calling call_service.",
     parameters: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description: "Search query to match against entity IDs and names",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 25,
+          description: "Maximum ranked results to return (default 12)",
         },
       },
       required: ["query"],

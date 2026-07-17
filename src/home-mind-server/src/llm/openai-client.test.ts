@@ -729,6 +729,7 @@ describe("OpenAIChatEngine", () => {
   });
 
   it("streams native OpenAI fast-path output without compatibility buffering", async () => {
+    config.openaiBaseUrl = "https://api.openai.com/v1";
     config.voiceEnvironmentEntityIds = ["weather.forecast_home"];
     vi.mocked(ha.getState).mockResolvedValue({
       entity_id: "weather.forecast_home",

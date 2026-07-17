@@ -359,9 +359,14 @@ export class OpenAIChatEngine implements IChatEngine {
       ? await (pending as unknown as { withResponse: () => Promise<{ data: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>; request_id?: string }> }).withResponse()
       : { data: await pending, request_id: undefined };
     const stream = response.data;
+    const openaiBaseHostname = this.config.openaiBaseUrl
+      ? new URL(this.config.openaiBaseUrl).hostname.toLowerCase()
+      : undefined;
     const bufferToolDisabledOutput =
       !options.toolsEnabled &&
-      (this.config.llmProvider === "ollama" || Boolean(this.config.openaiBaseUrl));
+      (this.config.llmProvider === "ollama" ||
+        (openaiBaseHostname !== undefined &&
+          openaiBaseHostname !== "api.openai.com"));
 
     let text = "";
     let finishReason: string | null = null;

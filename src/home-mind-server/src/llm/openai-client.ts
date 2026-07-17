@@ -345,7 +345,7 @@ export class OpenAIChatEngine implements IChatEngine {
         : { max_tokens: 2048 }),
       ...(options.toolsEnabled
         ? { tools: OPENAI_TOOLS }
-        : { tool_choice: "none" as const }),
+        : { tools: OPENAI_TOOLS, tool_choice: "none" as const }),
       ...(this.config.openaiServiceTier
         ? { service_tier: this.config.openaiServiceTier }
         : {}),
